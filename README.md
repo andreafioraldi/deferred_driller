@@ -18,13 +18,15 @@ This will not work on your code. Or at least can work with a low probability. Th
 
 All the following dependencies must be installed from the respective git repo and not from pip at the moment.
 
-+ angr
-+ angrdbg
-+ angrgdb
-+ ailment
-+ pyvex
-+ claripy
-+ archinfo
-+ cle
++ [archinfo](https://github.com/angr/archinfo)
++ [pyvex](https://github.com/angr/pyvex)
++ [ailment](https://github.com/angr/ailment)
++ [claripy](https://github.com/angr/claripy)
++ [cle](https://github.com/angr/cle)
++ [angr](https://github.com/angr/angr)
+
++ [angrdbg](https://github.com/andreafioraldi/angrdbg)
++ [angrgdb](https://github.com/andreafioraldi/angrgdb)
+
 
 
