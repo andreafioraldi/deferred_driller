@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import logging
 import glob
+import time
 import gdb
 import os
 
@@ -11,6 +12,7 @@ import angrgdb
 from .externals import apply_external_simprocs
 
 l = logging.getLogger("deferred_driller.runner")
+l.setLevel(logging.DEBUG)
 
 class PinRunner:
     def __init__(self, binary, argv=None, pin_path=None, pintool_path=None, use_simprocs=True):
@@ -75,9 +77,16 @@ class PinRunner:
             f.write(concrete_input)
         output_path = tempfile.mkstemp(dir="/dev/shm/", prefix="pin-tracer-log-")[1]      
         
+        l.debug("tracing with input file: " + input_path)
+        l.debug("tracing with output file: " + output_path)
+        
         gdb.execute("monitor input " + input_path)
         gdb.execute("monitor out " + output_path)
+        
+        st = time.time()
         gdb.execute("continue")
+        
+        l.debug("traced in %f minutes" % ((time.time() -st)/ 60.0))
         
         trace = []
         crash_addr = None

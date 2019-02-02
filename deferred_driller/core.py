@@ -22,7 +22,7 @@ class Driller(object):
     Driller object, symbolically follows an input looking for new state transitions.
     """
 
-    def __init__(self, runner, input_str, fuzz_bitmap=None, tag=None, redis=None, hooks=None, exclude_simprocs=[], stdin_bound=True, sync_brk=True, sync_fs=True):
+    def __init__(self, runner, input_str, fuzz_bitmap=None, tag=None, redis=None, hooks=None, exclude_simprocs=[], stdin_bound=True, sync_brk=True, sync_fs=True, explore_found=True):
         """
         :param runner           : The PinRunner instance.
         :param input_str        : Input string to feed to the binary.
@@ -34,6 +34,7 @@ class Driller(object):
         :param stdin_bound      : Bound read stdin
         :param sync_brk         : Synchronize brk value
         :param sync_fs          : Synchronize fs base value
+        :param explore_found    : Explore the deferred state to some extent 
         """
 
         self.runner           = runner
@@ -47,6 +48,7 @@ class Driller(object):
         self.stdin_bound      = stdin_bound
         self.sync_brk         = sync_brk
         self.sync_fs          = sync_fs
+        self.explore_found    = explore_found
         self.base = os.path.join(os.path.dirname(__file__), "..")
 
         # The simprocedures.
@@ -150,14 +152,14 @@ class Driller(object):
 
         self._set_concretizations(simgr.one_active)
 
-        l.debug("Drilling into %r.", self.input)
+        l.info("Drilling into %r.", self.input)
         l.debug("Input is %r.", self.input)
 
         while simgr.active and simgr.one_active.globals['trace_idx'] < len(trace) - 1:
             simgr.step()
             #print("RIP", simgr.one_active.regs.rip)
             #print("TRACE", simgr.one_active.globals['trace_idx'], hex(trace[simgr.one_active.globals['trace_idx']]))
-            l.info("stepped to " + str(simgr.one_active.regs.rip))
+            l.debug("stepped to " + str(simgr.one_active.regs.rip))
             
             if len(simgr.unconstrained) > 0:
                 while len(simgr.unconstrained) > 0:
@@ -180,8 +182,9 @@ class Driller(object):
                 w = self._writeout(state.history.bbl_addrs[-1], state)
                 if w is not None:
                     yield w
-                for i in self._symbolic_explorer_stub(state):
-                    yield i
+                if self.explore_found:
+                    for i in self._symbolic_explorer_stub(state):
+                        yield i
 
 ### EXPLORER
 
@@ -199,7 +202,7 @@ class Driller(object):
             pass
         simgr = p.factory.simulation_manager(state, hierarchy=False)
 
-        l.debug("[%s] started symbolic exploration at %s.", self.identifier, time.ctime())
+        l.info("[%s] started symbolic exploration at %s.", self.identifier, time.ctime())
 
         while len(simgr.active) and accumulated < 1024:
             simgr.step()
@@ -208,7 +211,7 @@ class Driller(object):
             # Dump all inputs.
             accumulated = steps * (len(simgr.active) + len(simgr.deadended))
 
-        l.debug("[%s] stopped symbolic exploration at %s.", self.identifier, time.ctime())
+        l.info("[%s] stopped symbolic exploration at %s.", self.identifier, time.ctime())
 
         for dumpable in simgr.deadended:
             try:
@@ -278,7 +281,7 @@ class Driller(object):
         else:
             self._add_to_catalogue(*key)
 
-        l.debug("[%s] dumping input for %#x -> %#x.", self.identifier, prev_addr, state.addr)
+        l.info("[%s] dumping input for %#x -> %#x.", self.identifier, prev_addr, state.addr)
 
         self._generated.add((key, generated))
 
@@ -289,7 +292,7 @@ class Driller(object):
             self.redis.publish(channel, pickle.dumps({'meta': key, 'data': generated, "tag": self.tag}))
 
         else:
-            l.debug("Generated: %s", binascii.hexlify(generated))
+            l.info("Generated: %s", binascii.hexlify(generated))
 
         return (key, generated)
 

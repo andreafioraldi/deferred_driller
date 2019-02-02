@@ -4,7 +4,7 @@ from itertools import islice
 from angr.exploration_techniques import ExplorationTechnique
 
 l = logging.getLogger("deferred_driller.exploration")
-#l.setLevel(logging.DEBUG)
+l.setLevel(logging.DEBUG)
 
 class DrillerCore(ExplorationTechnique):
     """

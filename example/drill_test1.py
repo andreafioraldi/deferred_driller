@@ -21,6 +21,8 @@ import base64
 from deferred_driller import *
 
 BINARY = "./test1_driller"
+STDIN_BOUND = True
+EXPLORE_FOUND = False
 
 bmap = open(cwd + "/output/master/fuzz_bitmap", "rb").read()
 
@@ -51,8 +53,7 @@ while True:
             if inp in processed:
                 continue
             
-            print("DRILLING ", inp)
-            d = Driller(pr, inp, bmap)
+            d = Driller(pr, inp, bmap, explore_found=EXPLORE_FOUND, stdin_bound=STDIN_BOUND)
             
             try:
                 for o in d.drill_generator():
@@ -60,7 +61,7 @@ while True:
                         continue
                     if o[0] in paths:
                         continue
-                    print("NEW ", hex(o[0][0]), hex(o[0][1]), hex(o[0][2]), " -- ", o[1])
+
                     index += 1
                     out = open(cwd + "/output/driller/queue/id:%06d,src:%s" % (index, target), "wb")
                     out.write(o[1])
