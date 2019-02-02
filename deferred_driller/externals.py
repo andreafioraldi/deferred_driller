@@ -57,7 +57,7 @@ def process_got(proj):
             
             if proj._sim_procedures[state_val].is_stub:
                 l.debug("Skipping re-hooking of %s cause is a stub" % name)
-            elif not target_proj.is_hooked(val):
+            elif not target_proj.is_hooked(dbg_val):
                 l.info("Re-hooking %s (got: 0x%x) to 0x%x" % (name, a, dbg_val))
                 target_proj.hook_symbol(dbg_val, proj._sim_procedures[state_val])
 
