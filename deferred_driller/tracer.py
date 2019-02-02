@@ -1,0 +1,369 @@
+import angr
+from typing import List
+import logging
+
+from angr.exploration_techniques import ExplorationTechnique
+from angr import BP_BEFORE, BP_AFTER, sim_options
+from angr.errors import AngrTracerError
+
+l = logging.getLogger("symbion_driller.tracer")
+
+
+class Tracer(ExplorationTechnique):
+    def __init__(self,
+            start_addr,
+            trace=None,
+            resiliency=False,
+            keep_predecessors=1,
+            crash_addr=None):
+        super(Tracer, self).__init__()
+        self._trace = trace
+        self._resiliency = resiliency
+        self._crash_addr = crash_addr
+
+        # keep track of the last basic block we hit
+        self.predecessors = [None] * keep_predecessors # type: List[angr.SimState]
+        self.last_state = None
+        self.start_addr = start_addr
+
+        # whether we should follow the trace
+        self._no_follow = self._trace is None
+
+    def setup(self, simgr):
+        simgr.populate('missed', [])
+        simgr.populate('traced', [])
+        simgr.populate('crashed', [])
+
+        self.project = simgr._project
+        if len(simgr.active) != 1:
+            raise AngrTracerError("Tracer is being invoked on a SimulationManager without exactly one active state")
+
+        for idx, addr in enumerate(self._trace):
+            if addr == self.start_addr:
+                break
+
+        # step to start addr
+        while self._trace and self._trace[idx] != simgr.one_active.addr:
+            simgr.step(extra_stop_points={self._trace[idx]})
+            if len(simgr.active) == 0:
+                raise AngrTracerError("Could not step to the first address of the trace - simgr is empty")
+            elif len(simgr.active) > 1:
+                raise AngrTracerError("Could not step to the first address of the trace - state split")
+
+        # initialize the state info
+        simgr.one_active.globals['trace_idx'] = idx
+        simgr.one_active.globals['sync_idx'] = None
+
+        # enable lazy solves - don't touch z3 unless I tell you so
+        simgr.one_active.options.add(sim_options.LAZY_SOLVES)
+
+    def complete(self, simgr):
+        return bool(simgr.traced)
+
+    def filter(self, simgr, state, **kwargs):
+        # check completion
+        if state.globals['trace_idx'] >= len(self._trace) - 1:
+            # do crash windup if necessary
+            if self._crash_addr is not None:
+                simgr.populate('crashed', [self._crash_windup(state)])
+
+            return 'traced'
+
+        return simgr.filter(state, **kwargs)
+
+    def step(self, simgr, stash='active', **kwargs):
+        simgr.drop(stash='missed')
+        return simgr.step(stash=stash, **kwargs)
+
+    def step_state(self, simgr, state, **kwargs):
+        # maintain the predecessors list
+        self.predecessors.append(state)
+        self.predecessors.pop(0)
+
+        # perform the step. ask qemu to stop at the termination point.
+        stops = set(kwargs.pop('extra_stop_points', ())) | {self._trace[-1]}
+        succs_dict = simgr.step_state(state, extra_stop_points=stops, **kwargs)
+        succs = succs_dict[None]
+
+        # follow the trace
+        if len(succs) == 1:
+            self._update_state_tracking(succs[0])
+        elif len(succs) == 0:
+            raise Exception("All states disappeared!")
+        else:
+            succ = self._pick_correct_successor(succs)
+            succs_dict[None] = [succ]
+            succs_dict['missed'] = [s for s in succs if s is not succ]
+
+        assert len(succs_dict[None]) == 1
+        return succs_dict
+
+    def _pick_correct_successor(self, succs):
+        # there's been a branch of some sort. Try to identify which state stayed on the trace.
+        assert len(succs) > 0
+        idx = succs[0].globals['trace_idx']
+
+        res = []
+        for succ in succs:
+            if succ.addr == self._trace[idx + 1]:
+                res.append(succ)
+
+        if not res:
+            raise Exception("No states followed the trace?")
+
+        if len(res) > 1:
+            raise Exception("The state split but several successors have the same (correct) address?")
+
+        self._update_state_tracking(res[0])
+        return res[0]
+
+    def _update_state_tracking(self, state: 'angr.SimState'):
+        idx = state.globals['trace_idx']
+        sync = state.globals['sync_idx']
+
+        if state.history.recent_block_count > 1:
+            # multiple blocks were executed this step. they should follow the trace *perfectly*
+            # or else something is up
+            # "something else" so far only includes concrete transmits, or...
+            # TODO: https://github.com/unicorn-engine/unicorn/issues/874
+            # ^ this means we will see desyncs of the form unicorn suddenly skips a bunch of qemu blocks
+            assert state.history.recent_block_count == len(state.history.recent_bbl_addrs)
+
+            if sync is not None:
+                raise Exception("TODO")
+
+            for addr in state.history.recent_bbl_addrs:
+                if addr == state.unicorn.transmit_addr:
+                    continue
+
+                if self._compare_addr(self._trace[idx], addr):
+                    idx += 1
+                else:
+                    raise Exception('BUG! Please investivate the claim in the comment above me')
+
+            idx -= 1 # use normal code to do the last synchronization
+
+        if sync is not None:
+            if self._compare_addr(self._trace[sync], state.addr):
+                state.globals['trace_idx'] = sync
+                state.globals['sync_idx'] = None
+            else:
+                raise Exception("Trace did not sync after 1 step, you knew this would happen")
+
+        elif self._compare_addr(self._trace[idx + 1], state.addr):
+            # normal case
+            state.globals['trace_idx'] = idx + 1
+        elif self.project.loader._extern_object is not None and self.project.loader.extern_object.contains_addr(state.addr):
+            # externs
+            proc = self.project.hooked_by(state.addr)
+            if proc is None:
+                raise Exception("Extremely bad news: we're executing an unhooked address in the externs space")
+            if proc.is_continuation:
+                orig_addr = self.project.loader.find_symbol(proc.display_name).rebased_addr
+                orig_trace_addr = orig_addr
+                if 0 <= self._trace[idx + 1] - orig_trace_addr <= 0x10000:
+                    # this is fine. we do nothing and then next round it'll get handled by the is_hooked(state.history.addr) case
+                    pass
+                else:
+                    # this may also be triggered as a consequence of the unicorn issue linked above
+                    raise Exception("BUG: State is returning to a continuation that isn't its own???")
+            else:
+                # see above
+                pass
+        elif state.history.jumpkind.startswith('Ijk_Sys'):
+            # syscalls
+            state.globals['sync_idx'] = idx + 1
+        elif state.history.jumpkind.startswith('Ijk_Exit'):
+            # termination!
+            state.globals['trace_idx'] = len(self._trace) - 1
+        elif self.project.is_hooked(state.history.addr):
+            # simprocedures - is this safe..?
+            self._fast_forward(state)
+        elif self._analyze_misfollow(state, idx):
+            # misfollow analysis will set a sync point somewhere if it succeeds
+            pass
+        else:
+            raise AngrTracerError("Oops! angr did not follow the trace.")
+
+        l.debug("Trace: %d/%d", state.globals['trace_idx'], len(self._trace))
+
+    def _compare_addr(self, trace_addr, state_addr):
+        return trace_addr == state_addr
+
+    def _analyze_misfollow(self, state, idx):
+        angr_addr = state.addr
+        trace_addr = self._trace[idx + 1]
+        l.info("Misfollow: angr says %#x, trace says %#x", angr_addr, trace_addr)
+
+        # TODO: add rep handling
+
+        if 'IRSB' in state.history.recent_description:
+            last_block = state.block(state.history.bbl_addrs[-1])
+            if self._trace[idx + 1] in last_block.instruction_addrs:
+                # we have disparate block sizes!
+                # specifically, the angr block size is larger than the trace's.
+                # allow the trace to catch up.
+                while self._trace[idx + 1] in last_block.instruction_addrs:
+                    idx += 1
+
+                if self._trace[idx + 1] == state.addr:
+                    state.globals['trace_idx'] = idx + 1
+                    return True
+                else:
+                    state.globals['trace_idx'] = idx
+                    #state.globals['trace_desync'] = True
+                    return True
+
+        prev_addr = state.history.bbl_addrs[-1]
+        prev_obj = self.project.loader.find_object_containing(prev_addr)
+
+        if state.block(prev_addr).vex.jumpkind == 'Ijk_Call':
+            l.info('...trying to sync at callsite')
+            return self._sync_callsite(state, idx, prev_addr)
+
+        if prev_addr in getattr(prev_obj, 'reverse_plt', ()):
+            prev_prev_addr = state.history.bbl_addrs[-2]
+            if not prev_obj.contains_addr(prev_prev_addr) or state.block(prev_prev_addr).vex.jumpkind != 'Ijk_Call':
+                l.info('...weird interaction with PLT stub, aborting analysis')
+                return False
+            l.info('...trying to sync at PLT callsite')
+            return self._sync_callsite(state, idx, prev_prev_addr)
+
+        l.info('...all analyses failed.')
+        return False
+
+    def _sync_callsite(self, state, idx, callsite_addr):
+        retsite_addr = state.block(callsite_addr).size + callsite_addr
+        try:
+            retsite_idx = self._trace.index(retsite_addr, idx)
+        except ValueError:
+            l.error("Trying to fix desync at callsite but return address does not appear in trace")
+            return False
+
+        state.globals['sync_idx'] = retsite_idx
+        state.globals['trace_idx'] = idx
+        return True
+
+    def _fast_forward(self, state):
+        target_addr = state.addr
+        try:
+            target_idx = self._trace.index(target_addr, state.globals['trace_idx'] + 1)
+        except ValueError:
+            raise AngrTracerError("Trace failed to synchronize during fast forward? You might want to unhook %s." % (self.project.hooked_by(state.history.addr).display_name))
+        else:
+            state.globals['trace_idx'] = target_idx
+
+    def _crash_windup(self, state):
+        # first check: are we just executing user-controlled code?
+        if not state.ip.symbolic and state.mem[state.ip].char.resolved.symbolic:
+            l.debug("executing input-related code")
+            return state
+
+        # before we step through and collect the actions we have to set
+        # up a special case for address concretization in the case of a
+        # controlled read or write vulnerability.
+        bp1 = state.inspect.b(
+            'address_concretization',
+            BP_BEFORE,
+            action=self._check_add_constraints)
+
+        bp2 = state.inspect.b(
+            'address_concretization',
+            BP_AFTER,
+            action=self._grab_concretization_results)
+
+        # step to the end of the crashing basic block,
+        # to capture its actions with those breakpoints
+        # TODO should this be using simgr.successors?
+        state.step()
+
+        # Add the constraints from concretized addrs back
+        for var, concrete_vals in state.preconstrainer.address_concretization:
+            if len(concrete_vals) > 0:
+                l.debug("constraining addr to be %#x", concrete_vals[0])
+                state.add_constraints(var == concrete_vals[0])
+
+        # then we step again up to the crashing instruction
+        inst_addrs = state.block().instruction_addrs
+        inst_cnt = len(inst_addrs)
+
+        if inst_cnt == 0:
+            insts = 0
+        elif self._crash_addr in inst_addrs:
+            insts = inst_addrs.index(self._crash_addr) + 1
+        else:
+            insts = inst_cnt - 1
+
+        l.debug("windup step...")
+        succs = state.step(num_inst=insts).flat_successors
+
+        if len(succs) > 0:
+            if len(succs) > 1:
+                succs = [s for s in succs if s.solver.satisfiable()]
+            state = succs[0]
+            self.last_state = state
+
+        # remove the preconstraints
+        l.debug("removing preconstraints")
+        state.preconstrainer.remove_preconstraints()
+
+        l.debug("reconstraining... ")
+        state.preconstrainer.reconstrain()
+
+        # now remove our breakpoints since other people might not want them
+        state.inspect.remove_breakpoint("address_concretization", bp1)
+        state.inspect.remove_breakpoint("address_concretization", bp2)
+
+        l.debug("final step...")
+        succs = state.step()
+        successors = succs.flat_successors + succs.unconstrained_successors
+        return successors[0]
+
+    # the below are utility functions for crash windup
+
+    def _grab_concretization_results(self, state):
+        """
+        Grabs the concretized result so we can add the constraint ourselves.
+        """
+        # only grab ones that match the constrained addrs
+        if self._should_add_constraints(state):
+            addr = state.inspect.address_concretization_expr
+            result = state.inspect.address_concretization_result
+            if result is None:
+                l.warning("addr concretization result is None")
+                return
+            state.preconstrainer.address_concretization.append((addr, result))
+
+    def _check_add_constraints(self, state):
+        """
+        Obnoxious way to handle this, should ONLY be called from crash monitor.
+        """
+        # for each constrained addrs check to see if the variables match,
+        # if so keep the constraints
+        state.inspect.address_concretization_add_constraints = self._should_add_constraints(state)
+
+    def _should_add_constraints(self, state):
+        """
+        Check to see if the current address concretization variable is any of the registered
+        constrained_addrs we want to allow concretization for
+        """
+        expr = state.inspect.address_concretization_expr
+        hit_indices = self._to_indices(state, expr)
+
+        for action in state.preconstrainer._constrained_addrs:
+            var_indices = self._to_indices(state, action.addr)
+            if var_indices == hit_indices:
+                return True
+        return False
+
+    @staticmethod
+    def _to_indices(state, expr):
+        indices = []
+        for descr in state.solver.describe_variables(expr):
+            if descr[0] == 'file' and descr[1] == state.posix.stdin.ident:
+                if descr[2] == 'packet':
+                    indices.append(descr[3])
+                elif type(descr[2]) is int:
+                    indices.append(descr[2])
+
+        return sorted(indices)
