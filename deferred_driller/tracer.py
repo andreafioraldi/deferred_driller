@@ -6,7 +6,7 @@ from angr.exploration_techniques import ExplorationTechnique
 from angr import BP_BEFORE, BP_AFTER, sim_options
 from angr.errors import AngrTracerError
 
-l = logging.getLogger("symbion_driller.tracer")
+l = logging.getLogger("deferred_driller.tracer")
 
 
 class Tracer(ExplorationTechnique):
