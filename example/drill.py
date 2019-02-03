@@ -45,7 +45,7 @@ if os.path.exists(os.path.basename(BINARY) + "-deferred-driller-data.json"):
 pr = PinRunner(BINARY, use_simprocs=True)
 
 while True:
-    print("waiting while pending_favs != 0")
+    #print("waiting while pending_favs != 0")
     while True:
         stats = open(cwd + "/output/master/fuzzer_stats")
         pfavs = None
@@ -54,7 +54,7 @@ while True:
                 pfavs = l.split(":")[1].strip()
                 break
         if pfavs == "0":
-            print("pending_favs = 0")
+            #print("pending_favs = 0")
             break
         time.sleep(2)
     
@@ -81,6 +81,10 @@ while True:
             if inp_hash in processed:
                 continue
             processed.append(inp_hash)
+            
+            ### hack for strncmp not satisfiable diverted state, see https://github.com/shellphish/driller/issues/70
+            if len(inp) < 100:
+                inp = inp.ljust(100, b"\x00")
             
             bmap = open(cwd + "/output/master/fuzz_bitmap", "rb").read()
             d = Driller(pr, inp, bmap, explore_found=EXPLORE_FOUND, stdin_bound=STDIN_BOUND)
