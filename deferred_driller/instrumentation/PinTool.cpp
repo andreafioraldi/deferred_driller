@@ -145,7 +145,7 @@ BOOL DebugInterpreter(THREADID tid, CONTEXT *ctxt, const string &cmd, string* re
 }
 
 
-//env LD_BIND_NOW=1 __DRILLER_MUST_FORK__=1 ../pin-3.7/pin -appdebug -t obj-intel64/Deferred.so -- ../test1
+//env LD_BIND_NOW=1 ../pin-3.7/pin -appdebug -t obj-intel64/PinTool.so -- ../test1
 
 int main(int argc, char *argv[])
 {

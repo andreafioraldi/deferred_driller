@@ -10,6 +10,8 @@ import binascii
 import angr
 import angrgdb
 
+import progressbar
+
 from .tracer import Tracer
 from .exploration import DrillerCore
 from . import config
@@ -142,8 +144,10 @@ class Driller(object):
         s.preconstrainer.preconstrain_file(self.input, s.posix.stdin, self.stdin_bound)
 
         simgr = p.factory.simulation_manager(s, save_unsat=True, hierarchy=False, save_unconstrained=True)
-
-        t = Tracer(self.runner.get_start_addr(trace), trace=trace, crash_addr=crash_addr)
+        
+        start_addr = self.runner.get_start_addr(trace)
+        
+        t = Tracer(start_addr, trace=trace, crash_addr=crash_addr)
         self._core = DrillerCore(trace=trace, fuzz_bitmap=self.fuzz_bitmap)
 
         simgr.use_technique(t)
@@ -154,37 +158,40 @@ class Driller(object):
 
         l.info("Drilling into %r.", self.input)
         l.debug("Input is %r.", self.input)
+        
+        start_addr_idx = trace.index(start_addr)
+        with progressbar.ProgressBar(max_value=(len(trace) - start_addr_idx)) as bar:
+            while simgr.active and simgr.one_active.globals['trace_idx'] < len(trace) - 1:
+                simgr.step()
+                #print("RIP", simgr.one_active.regs.rip)
+                #print("TRACE", simgr.one_active.globals['trace_idx'], hex(trace[simgr.one_active.globals['trace_idx']]))
+                bar.update(simgr.one_active.globals['trace_idx'] - start_addr_idx)
+                l.debug("stepped to " + str(simgr.one_active.regs.rip))
+                
+                if len(simgr.unconstrained) > 0:
+                    while len(simgr.unconstrained) > 0:
+                        state = simgr.unconstrained.pop(0)
+                        l.debug("Found a unconstrained state, exploring to some extent.")
+                        w = self._writeout(state.history.bbl_addrs[-1], state)
+                        if w is not None:
+                            yield w
+                
+                # Check here to see if a crash has been found.
+                if self.redis and self.redis.sismember(self.identifier + '-finished', True):
+                    return
 
-        while simgr.active and simgr.one_active.globals['trace_idx'] < len(trace) - 1:
-            simgr.step()
-            #print("RIP", simgr.one_active.regs.rip)
-            #print("TRACE", simgr.one_active.globals['trace_idx'], hex(trace[simgr.one_active.globals['trace_idx']]))
-            l.debug("stepped to " + str(simgr.one_active.regs.rip))
-            
-            if len(simgr.unconstrained) > 0:
-                while len(simgr.unconstrained) > 0:
-                    state = simgr.unconstrained.pop(0)
-                    l.debug("Found a unconstrained state, exploring to some extent.")
+                if 'diverted' not in simgr.stashes:
+                    continue
+
+                while simgr.diverted:
+                    state = simgr.diverted.pop(0)
+                    l.debug("Found a diverted state, exploring to some extent.")
                     w = self._writeout(state.history.bbl_addrs[-1], state)
                     if w is not None:
                         yield w
-            
-            # Check here to see if a crash has been found.
-            if self.redis and self.redis.sismember(self.identifier + '-finished', True):
-                return
-
-            if 'diverted' not in simgr.stashes:
-                continue
-
-            while simgr.diverted:
-                state = simgr.diverted.pop(0)
-                l.debug("Found a diverted state, exploring to some extent.")
-                w = self._writeout(state.history.bbl_addrs[-1], state)
-                if w is not None:
-                    yield w
-                if self.explore_found:
-                    for i in self._symbolic_explorer_stub(state):
-                        yield i
+                    if self.explore_found:
+                        for i in self._symbolic_explorer_stub(state):
+                            yield i
 
 ### EXPLORER
 
