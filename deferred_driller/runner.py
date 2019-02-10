@@ -60,10 +60,8 @@ class PinRunner:
         gdb.execute("monitor enable_fork")
         
         if use_simprocs:
-            angrgdb.set_memory_type(angrgdb.SIMPROCS_FROM_CLE)
             apply_external_simprocs()
-        else:
-            angrgdb.set_memory_type(angrgdb.GET_ALL_DISCARD_CLE)
+        angrgdb.set_memory_type(angrgdb.GET_ALL_DISCARD_CLE)
     
     def brk(self):
         return int(gdb.execute("monitor brk", to_string=True))

@@ -71,6 +71,6 @@ def apply_external_simprocs():
             process_got(p)
         except Exception as ee:
             l.warning("Failed to apply simprocs to " + o + ": " + str(ee))
-
+    process_got(angrgdb.load_project())
 
 

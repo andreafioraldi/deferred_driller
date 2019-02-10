@@ -24,7 +24,7 @@ class Driller(object):
     Driller object, symbolically follows an input looking for new state transitions.
     """
 
-    def __init__(self, runner, input_str, fuzz_bitmap=None, tag=None, redis=None, hooks=None, exclude_simprocs=[], stdin_bound=True, sync_brk=True, sync_fs=True, explore_found=True):
+    def __init__(self, runner, input_str, fuzz_bitmap=None, tag=None, redis=None, hooks=None, exclude_simprocs=[], stdin_bound=True, sync_brk=True, sync_fs=True, explore_found=True, zero_fill=False):
         """
         :param runner           : The PinRunner instance.
         :param input_str        : Input string to feed to the binary.
@@ -51,6 +51,7 @@ class Driller(object):
         self.sync_brk         = sync_brk
         self.sync_fs          = sync_fs
         self.explore_found    = explore_found
+        self.zero_fill        = zero_fill
         self.base = os.path.join(os.path.dirname(__file__), "..")
 
         # The simprocedures.
@@ -134,6 +135,10 @@ class Driller(object):
             l.debug("Hooking %#x -> %s...", addr, proc.display_name)
         
         s = angrgdb.StateShot(sync_brk=False, concrete_imports=self.exclude_simprocs, stdin=angr.SimFileStream)
+        
+        if self.zero_fill:
+            s.options.add(angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY)
+            s.options.add(angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS)
         
         if self.sync_brk: # don't use angrdbg brk but ask for it to the runner
             s.posix.set_brk(s.solver.BVV(self.runner.brk(), p.arch.bits))

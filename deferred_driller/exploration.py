@@ -67,7 +67,6 @@ class DrillerCore(ExplorationTechnique):
                         l.debug("Found a completely new transition, putting into 'diverted' stash.")
                         simgr.stashes['diverted'].append(state)
                         self.encounters.add(transition)
-
                     else:
                         l.debug("State at %#x is not satisfiable.", transition[1])
 

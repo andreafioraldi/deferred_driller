@@ -29,8 +29,8 @@ l.setLevel(logging.INFO)
 
 BINARY = "./test1_driller"
 STDIN_BOUND = True
-EXPLORE_FOUND = True
-MINIMIZE = False
+EXPLORE_FOUND = False
+MINIMIZE = True
 
 os.system("mkdir -p %s/output/driller/queue" % cwd)
 
@@ -47,28 +47,26 @@ else:
 runner = PinRunner(BINARY, use_simprocs=True)
 
 while True:
-    l.debug("waiting while pending_favs != 0")
-    while True:
-        stats = open(cwd + "/output/master/fuzzer_stats")
+    for subd in os.listdir(cwd + "/output/"):
+        if not os.path.isdir(cwd + "/output/" + subd):
+            continue
+        
+        stats = open(cwd + "/output/%s/fuzzer_stats"%subd)
         pfavs = None
         for line in stats:
             if line.startswith("pending_favs"):
                 pfavs = line.split(":")[1].strip()
                 break
-        if pfavs == "0":
-            l.debug("pending_favs = 0")
+        if pfavs != "0":
+            l.debug("%s pending_favs != 0" % subd)
             break
-        time.sleep(2)
-    
-    for subd in os.listdir(cwd + "/output/"):
-        if not os.path.isdir(cwd + "/output/" + subd):
-            continue
+        
         for f in os.listdir(cwd + "/output/%s/queue/" % subd):
             if not os.path.exists(cwd + "/output/%s/queue/" % subd + f) or os.path.isdir(cwd + "/output/%s/queue/" % subd + f):
                 continue
             target = f[:len("id:......")]
             l.debug("targetting " + cwd + "/output/%s/queue/" % subd + f)
-            
+
             if MINIMIZE:
                 minimized = tempfile.mkstemp(dir="/tmp/", prefix="driller-minimized-")[1]
                 r = os.system("~/afl/afl-tmin -t 20000 -i '%s' -o %s -- %s" % (cwd + "/output/%s/queue/" % subd + f, minimized, BINARY.replace("driller", "afl")))
@@ -111,6 +109,5 @@ while True:
             l.info("saving stuffs...")
             with open(os.path.basename(BINARY) + "-deferred-driller-data.json", "w") as dmp:
                 json.dump({"processed": processed, "transitions": transitions, "index": index}, dmp)
-
 
 
